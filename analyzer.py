@@ -196,7 +196,7 @@ def get_price_reaction(ticker: str, earnings_date: str) -> dict:
         stock = yf.Ticker(ticker)
 
         # Get price BEFORE earnings (always use daily close)
-        hist_before = stock.history(start=dt - timedelta(days=7), end=dt)
+        hist_before = stock.history(start=dt - timedelta(days=7), end=dt + timedelta(days=1))
         if hist_before.empty:
             return {"error": "No price data found before that date. Check the ticker."}
 
