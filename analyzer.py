@@ -185,9 +185,17 @@ def analyze_by_sentence(text: str) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def safe_strip_tz(df):
+    """Safely remove timezone info whether or not it exists."""
+    try:
+        df.index = df.index.tz_localize(None)
+    except TypeError:
+        df.index = df.index.tz_convert(None)
+    return df
+
+
 def get_price_reaction(ticker: str, earnings_date: str) -> dict:
-    """Get stock return from close before earnings to close/current price after.
-    Handles today's date by falling back to intraday 1m data for current price."""
+    """Get stock return from close before earnings to close/current price after."""
     try:
         dt = datetime.strptime(earnings_date, "%Y-%m-%d")
         today = datetime.now().date()
@@ -195,31 +203,43 @@ def get_price_reaction(ticker: str, earnings_date: str) -> dict:
 
         stock = yf.Ticker(ticker)
 
-        # Get price BEFORE earnings (always use daily close)
-        hist_before = stock.history(start=dt - timedelta(days=7), end=dt + timedelta(days=1))
+        # ── Price BEFORE: last close before earnings day ──
+        hist_before = stock.history(start=dt - timedelta(days=10), end=dt + timedelta(days=1))
         if hist_before.empty:
-            return {"error": "No price data found before that date. Check the ticker."}
+            return {"error": f"No data for {ticker.upper()}. Check the ticker symbol."}
 
-        hist_before.index = hist_before.index.tz_localize(None)
-        hist_before = hist_before.sort_index()
-        price_before = float(hist_before["Close"].iloc[-1])
-        date_before  = str(hist_before.index[-1].date())
+        hist_before = safe_strip_tz(hist_before).sort_index()
 
-        # Get price AFTER earnings
+        # Only keep rows strictly before the earnings date
+        before_rows = hist_before[hist_before.index.normalize() < pd.Timestamp(dt)]
+        if before_rows.empty:
+            # Fallback: just use the earliest row available
+            before_rows = hist_before
+
+        price_before = float(before_rows["Close"].iloc[-1])
+        date_before  = str(before_rows.index[-1].date())
+
+        # ── Price AFTER: intraday if today, else next close ──
         if is_today:
-            intraday = stock.history(period="1d", interval="1m")
+            intraday = stock.history(period="1d", interval="5m")
             if intraday.empty:
-                return {"error": "Market may not be open yet or ticker is invalid."}
-            intraday.index = intraday.index.tz_localize(None)
-            price_after = float(intraday["Close"].iloc[-1])
-            date_after  = str(intraday.index[-1].strftime("%Y-%m-%d %H:%M"))
-            note = "live intraday price"
+                # Market closed — use the daily close we already have
+                today_rows = hist_before[hist_before.index.normalize() >= pd.Timestamp(dt)]
+                if today_rows.empty:
+                    return {"error": "Could not get today's price. Market may be closed."}
+                price_after = float(today_rows["Close"].iloc[-1])
+                date_after  = str(today_rows.index[-1].date())
+                note = "today's close"
+            else:
+                intraday = safe_strip_tz(intraday)
+                price_after = float(intraday["Close"].iloc[-1])
+                date_after  = str(intraday.index[-1].strftime("%Y-%m-%d %H:%M"))
+                note = "live price"
         else:
             hist_after = stock.history(start=dt, end=dt + timedelta(days=7))
             if hist_after.empty:
                 return {"error": "No price data found after that date."}
-            hist_after.index = hist_after.index.tz_localize(None)
-            hist_after = hist_after.sort_index()
+            hist_after = safe_strip_tz(hist_after).sort_index()
             price_after = float(hist_after["Close"].iloc[0])
             date_after  = str(hist_after.index[0].date())
             note = "closing price"
@@ -236,7 +256,7 @@ def get_price_reaction(ticker: str, earnings_date: str) -> dict:
             "note": note,
         }
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": f"Error fetching price: {str(e)}"}
 
 
 # ─────────────────────────────────────────────
