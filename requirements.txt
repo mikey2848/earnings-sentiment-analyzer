@@ -1,7 +1,7 @@
-vaderSentiment==3.3.2
-yfinance==0.2.37
-plotly==5.20.0
-streamlit==1.33.0
-pandas==2.2.1
-requests==2.31.0
-beautifulsoup4==4.12.3
+vaderSentiment
+yfinance==0.2.40
+plotly
+streamlit
+pandas
+lxml
+html5lib
