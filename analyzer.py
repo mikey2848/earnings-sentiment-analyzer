@@ -12,7 +12,7 @@ Usage:
 """
 
 import streamlit as st
-import yfinance as yf
+import requests
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -185,78 +185,74 @@ def analyze_by_sentence(text: str) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def safe_strip_tz(df):
-    """Safely remove timezone info whether or not it exists."""
-    try:
-        df.index = df.index.tz_localize(None)
-    except TypeError:
-        df.index = df.index.tz_convert(None)
-    return df
-
-
-def get_price_reaction(ticker: str, earnings_date: str) -> dict:
-    """Get stock return from close before earnings to close/current price after."""
+def get_price_reaction(ticker: str, earnings_date: str, polygon_key: str) -> dict:
+    """Get stock return using Polygon.io API — reliable from cloud servers."""
+    if not polygon_key or len(polygon_key) < 5:
+        return {"error": "Enter your Polygon.io API key in the sidebar to see price data."}
     try:
         dt = datetime.strptime(earnings_date, "%Y-%m-%d")
         today = datetime.now().date()
         is_today = dt.date() == today
 
-        stock = yf.Ticker(ticker)
+        base = "https://api.polygon.io/v2/aggs/ticker"
 
-        # ── Price BEFORE: last close before earnings day ──
-        hist_before = stock.history(start=dt - timedelta(days=10), end=dt + timedelta(days=1))
-        if hist_before.empty:
-            return {"error": f"No data for {ticker.upper()}. Check the ticker symbol."}
+        # ── Price BEFORE: last close in the 7 days before earnings ──
+        from_date = (dt - timedelta(days=7)).strftime("%Y-%m-%d")
+        to_date   = (dt - timedelta(days=1)).strftime("%Y-%m-%d")
+        url_before = f"{base}/{ticker.upper()}/range/1/day/{from_date}/{to_date}?adjusted=true&sort=desc&limit=5&apiKey={polygon_key}"
+        r_before = requests.get(url_before, timeout=10)
+        data_before = r_before.json()
 
-        hist_before = safe_strip_tz(hist_before).sort_index()
+        if data_before.get("resultsCount", 0) == 0:
+            msg = data_before.get("message", data_before.get("error", "No results"))
+            return {"error": f"Polygon: {msg}. Check ticker or API key."}
 
-        # Only keep rows strictly before the earnings date
-        before_rows = hist_before[hist_before.index.normalize() < pd.Timestamp(dt)]
-        if before_rows.empty:
-            # Fallback: just use the earliest row available
-            before_rows = hist_before
+        price_before = float(data_before["results"][0]["c"])
+        date_before  = pd.Timestamp(data_before["results"][0]["t"], unit="ms").strftime("%Y-%m-%d")
 
-        price_before = float(before_rows["Close"].iloc[-1])
-        date_before  = str(before_rows.index[-1].date())
-
-        # ── Price AFTER: intraday if today, else next close ──
+        # ── Price AFTER: today = latest trade, else next close ──
         if is_today:
-            intraday = stock.history(period="1d", interval="5m")
-            if intraday.empty:
-                # Market closed — use the daily close we already have
-                today_rows = hist_before[hist_before.index.normalize() >= pd.Timestamp(dt)]
-                if today_rows.empty:
-                    return {"error": "Could not get today's price. Market may be closed."}
-                price_after = float(today_rows["Close"].iloc[-1])
-                date_after  = str(today_rows.index[-1].date())
-                note = "today's close"
+            url_today = f"https://api.polygon.io/v2/last/trade/{ticker.upper()}?apiKey={polygon_key}"
+            r_today = requests.get(url_today, timeout=10)
+            data_today = r_today.json()
+            if "results" in data_today:
+                price_after = float(data_today["results"]["p"])
+                date_after  = pd.Timestamp(data_today["results"]["t"], unit="ns").strftime("%Y-%m-%d %H:%M")
+                note = "last trade price"
             else:
-                intraday = safe_strip_tz(intraday)
-                price_after = float(intraday["Close"].iloc[-1])
-                date_after  = str(intraday.index[-1].strftime("%Y-%m-%d %H:%M"))
-                note = "live price"
+                # Fallback: previous close from Polygon
+                url_prev = f"https://api.polygon.io/v2/aggs/ticker/{ticker.upper()}/prev?adjusted=true&apiKey={polygon_key}"
+                r_prev = requests.get(url_prev, timeout=10)
+                data_prev = r_prev.json()
+                if data_prev.get("resultsCount", 0) == 0:
+                    return {"error": "Could not fetch today's price from Polygon."}
+                price_after = float(data_prev["results"][0]["c"])
+                date_after  = earnings_date
+                note = "previous close"
         else:
-            hist_after = stock.history(start=dt, end=dt + timedelta(days=7))
-            if hist_after.empty:
-                return {"error": "No price data found after that date."}
-            hist_after = safe_strip_tz(hist_after).sort_index()
-            price_after = float(hist_after["Close"].iloc[0])
-            date_after  = str(hist_after.index[0].date())
+            to_after   = (dt + timedelta(days=7)).strftime("%Y-%m-%d")
+            url_after  = f"{base}/{ticker.upper()}/range/1/day/{earnings_date}/{to_after}?adjusted=true&sort=asc&limit=5&apiKey={polygon_key}"
+            r_after    = requests.get(url_after, timeout=10)
+            data_after = r_after.json()
+            if data_after.get("resultsCount", 0) == 0:
+                return {"error": "No price data after that date. Market may have been closed."}
+            price_after = float(data_after["results"][0]["c"])
+            date_after  = pd.Timestamp(data_after["results"][0]["t"], unit="ms").strftime("%Y-%m-%d")
             note = "closing price"
 
         pct_change = ((price_after - price_before) / price_before) * 100
 
         return {
-            "ticker": ticker.upper(),
-            "date_before": date_before,
-            "date_after":  date_after,
+            "ticker":       ticker.upper(),
+            "date_before":  date_before,
+            "date_after":   date_after,
             "price_before": round(price_before, 2),
             "price_after":  round(price_after, 2),
             "pct_change":   round(pct_change, 2),
-            "note": note,
+            "note":         note,
         }
     except Exception as e:
-        return {"error": f"Error fetching price: {str(e)}"}
+        return {"error": f"Polygon error: {str(e)}"}
 
 
 # ─────────────────────────────────────────────
@@ -305,6 +301,10 @@ st.markdown("---")
 with st.sidebar:
     st.markdown("### ⚡ Quick Load")
     sample_choice = st.selectbox("Load a sample transcript", ["(none)"] + list(SAMPLES.keys()))
+    st.markdown("---")
+    st.markdown("### 🔑 Polygon.io API Key")
+    polygon_key = st.text_input("API Key", type="password", placeholder="Paste your key here")
+    st.markdown("[Get a free key →](https://polygon.io)", unsafe_allow_html=True)
     st.markdown("---")
     st.markdown("### 📖 How It Works")
     st.markdown("""
@@ -360,7 +360,7 @@ if run:
 
             scores      = get_finance_adjusted_score(transcript)
             sentence_df = analyze_by_sentence(transcript)
-            price_data  = get_price_reaction(ticker, earnings_date) if ticker and earnings_date else None
+            price_data  = get_price_reaction(ticker, earnings_date, polygon_key) if ticker and earnings_date else None
 
         st.markdown("---")
         title = company_name if company_name else ticker.upper() if ticker else "Earnings Call"
