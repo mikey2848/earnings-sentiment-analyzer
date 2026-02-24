@@ -186,40 +186,54 @@ def analyze_by_sentence(text: str) -> pd.DataFrame:
 
 
 def get_price_reaction(ticker: str, earnings_date: str) -> dict:
-    """Get stock return from close before earnings to close after."""
+    """Get stock return from close before earnings to close/current price after.
+    Handles today's date by falling back to intraday 1m data for current price."""
     try:
         dt = datetime.strptime(earnings_date, "%Y-%m-%d")
-        start = dt - timedelta(days=5)
-        end = dt + timedelta(days=5)
+        today = datetime.now().date()
+        is_today = dt.date() == today
 
         stock = yf.Ticker(ticker)
-        hist = stock.history(start=start, end=end)
 
-        if hist.empty or len(hist) < 2:
-            return {"error": "Not enough price data. Check ticker and date."}
+        # Get price BEFORE earnings (always use daily close)
+        hist_before = stock.history(start=dt - timedelta(days=7), end=dt)
+        if hist_before.empty:
+            return {"error": "No price data found before that date. Check the ticker."}
 
-        hist.index = hist.index.tz_localize(None)
-        hist = hist.sort_index()
+        hist_before.index = hist_before.index.tz_localize(None)
+        hist_before = hist_before.sort_index()
+        price_before = float(hist_before["Close"].iloc[-1])
+        date_before  = str(hist_before.index[-1].date())
 
-        # Find the two trading days straddling earnings date
-        dates = hist.index.normalize()
-        before_dates = dates[dates < pd.Timestamp(dt)]
-        after_dates  = dates[dates >= pd.Timestamp(dt)]
+        # Get price AFTER earnings
+        if is_today:
+            intraday = stock.history(period="1d", interval="1m")
+            if intraday.empty:
+                return {"error": "Market may not be open yet or ticker is invalid."}
+            intraday.index = intraday.index.tz_localize(None)
+            price_after = float(intraday["Close"].iloc[-1])
+            date_after  = str(intraday.index[-1].strftime("%Y-%m-%d %H:%M"))
+            note = "live intraday price"
+        else:
+            hist_after = stock.history(start=dt, end=dt + timedelta(days=7))
+            if hist_after.empty:
+                return {"error": "No price data found after that date."}
+            hist_after.index = hist_after.index.tz_localize(None)
+            hist_after = hist_after.sort_index()
+            price_after = float(hist_after["Close"].iloc[0])
+            date_after  = str(hist_after.index[0].date())
+            note = "closing price"
 
-        if before_dates.empty or after_dates.empty:
-            return {"error": "Could not find trading days around that date."}
-
-        price_before = hist.loc[before_dates[-1], "Close"]
-        price_after  = hist.loc[after_dates[0],  "Close"]
-        pct_change   = ((price_after - price_before) / price_before) * 100
+        pct_change = ((price_after - price_before) / price_before) * 100
 
         return {
             "ticker": ticker.upper(),
-            "date_before": str(before_dates[-1].date()),
-            "date_after":  str(after_dates[0].date()),
-            "price_before": round(float(price_before), 2),
-            "price_after":  round(float(price_after), 2),
-            "pct_change":   round(float(pct_change), 2),
+            "date_before": date_before,
+            "date_after":  date_after,
+            "price_before": round(price_before, 2),
+            "price_after":  round(price_after, 2),
+            "pct_change":   round(pct_change, 2),
+            "note": note,
         }
     except Exception as e:
         return {"error": str(e)}
