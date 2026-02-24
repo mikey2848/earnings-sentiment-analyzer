@@ -1,7 +1,5 @@
 vaderSentiment
-yfinance==0.2.40
 plotly
 streamlit
 pandas
-lxml
-html5lib
+requests
