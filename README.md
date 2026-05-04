@@ -1,4 +1,4 @@
-# 📊 Earnings Call Sentiment Analyzer — Layer 1
+# Basic Earnings Call Sentiment Analyzer 
 
 Analyzes the sentiment of earnings call transcripts and compares it against
 post-earnings stock price movement. Built to answer: **does what management says predict what the stock does?**
@@ -40,9 +40,4 @@ You'll have a live shareable link in ~2 minutes.
 
 ## Roadmap
 
-| Layer | Status | Description |
-|-------|--------|-------------|
 | 1 | ✅ Built | VADER + finance boosts + price reaction |
-| 2 | 🔜 Next | Section-level: prepared remarks vs. Q&A tone delta |
-| 3 | 🔜 Soon | LLM-powered: guidance extraction, question dodging, key topics |
-| 4 | 🔜 Later | Backtesting across 50+ calls |
